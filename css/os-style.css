@@ -1,0 +1,68 @@
+/* HackOS Boot — retro terminal styling */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#111;--panel:#1a1a2e;--border:#333;--fg:#c8c8c8;
+  --accent:#0f0;--accent-dim:#0a0;--warn:#fa0;--err:#f44;
+  --mono:'Consolas','Courier New',monospace;
+}
+html,body{height:100%;background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:14px;overflow:hidden}
+
+/* Layout */
+.os-shell{display:flex;flex-direction:column;height:100vh}
+.os-topbar{display:flex;align-items:center;justify-content:space-between;padding:6px 16px;background:var(--panel);border-bottom:1px solid var(--border)}
+.os-topbar h1{font-size:16px;color:var(--accent);letter-spacing:1px}
+.os-topbar .sub{font-size:11px;color:#666;margin-left:12px}
+
+/* Main area */
+.os-main{flex:1;display:flex;overflow:hidden}
+
+/* Setup panel (left) */
+.setup-panel{width:520px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--panel);overflow-y:auto;flex-shrink:0;transition:width .3s}
+.setup-panel.collapsed{width:0;overflow:hidden;border-right:none}
+.setup-section{display:flex;flex-direction:column;flex:1;min-height:0}
+.setup-section h3{padding:6px 12px;font-size:12px;color:var(--accent-dim);background:#151528;border-bottom:1px solid var(--border);cursor:default;display:flex;justify-content:space-between;align-items:center}
+.setup-section h3 span.tag{font-size:10px;background:var(--accent-dim);color:#000;padding:1px 6px;border-radius:3px}
+.setup-section textarea{flex:1;resize:none;background:#0d0d1a;color:var(--fg);border:none;padding:8px 12px;font-family:var(--mono);font-size:13px;line-height:1.5;outline:none;tab-size:4;min-height:120px}
+.setup-section textarea:focus{background:#0f0f22}
+
+/* Screen area (right) */
+.screen-area{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000;position:relative}
+.monitor-frame{border:3px solid #333;border-radius:8px;background:#000;padding:8px;box-shadow:0 0 40px rgba(0,255,0,.05)}
+.monitor-frame canvas{display:block;image-rendering:pixelated;cursor:crosshair}
+/* CRT scanline effect */
+.monitor-frame canvas{
+  background:#000;
+}
+
+/* Bottom bar */
+.os-bottom{display:flex;align-items:center;gap:12px;padding:6px 16px;background:var(--panel);border-top:1px solid var(--border);font-size:12px}
+.os-bottom .status{flex:1;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.os-bottom .status.error{color:var(--err)}
+
+/* Buttons */
+button{font-family:var(--mono);font-size:12px;padding:4px 14px;border:1px solid var(--border);background:#222;color:var(--fg);cursor:pointer;border-radius:3px;transition:background .15s}
+button:hover{background:#333}
+button.primary{background:var(--accent-dim);color:#000;border-color:var(--accent-dim);font-weight:bold}
+button.primary:hover{background:var(--accent)}
+button.danger{border-color:#a33;color:#f88}
+button.danger:hover{background:#411}
+
+/* Toolbar */
+.toolbar{display:flex;gap:6px;align-items:center}
+.toolbar label{color:#888;font-size:11px}
+
+/* Error panel */
+.error-panel{display:none;max-height:120px;overflow-y:auto;background:#1a0000;border-top:1px solid #600;padding:8px 12px;font-size:12px;color:var(--err);white-space:pre-wrap}
+.error-panel.visible{display:block}
+
+/* Toggle button for sidebar */
+.toggle-setup{position:absolute;left:4px;top:50%;transform:translateY(-50%);z-index:10;background:var(--panel);border:1px solid var(--border);color:var(--fg);padding:8px 4px;cursor:pointer;border-radius:0 4px 4px 0;font-size:16px;line-height:1}
+
+/* Keyboard hint */
+.kb-hint{position:absolute;bottom:8px;right:12px;font-size:10px;color:#444}
+
+/* Responsive */
+@media(max-width:900px){
+  .setup-panel{width:100%;max-height:40vh;border-right:none;border-bottom:1px solid var(--border)}
+  .os-main{flex-direction:column}
+}

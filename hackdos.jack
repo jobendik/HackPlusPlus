@@ -1,0 +1,627 @@
+// ============================================================
+// HackDOS - DOS-inspired shell for the Hack+ CPU emulator
+// Written in Jack++
+//
+// Entry point: fn main()
+// The Shell class handles all command parsing and execution.
+//
+// Supported commands:
+//   HELP / ?    CLS    VER    ECHO   COLOR
+//   DIR         TYPE   PEEK   POKE   MEM
+//   TIME        BEEP   SET    EXIT / HALT / QUIT
+// ============================================================
+
+fn main() {
+    poke(0xFF30, 0);              // Switch to text mode
+    var sh: Shell = Shell.new();  // Create and initialize shell
+    sh.run();                     // Run the command loop (never returns)
+    halt();
+}
+
+// ============================================================
+// Shell class - the DOS command interpreter
+// ============================================================
+class Shell {
+    field buf: Array;    // Input buffer (up to 81 characters)
+    field len: int;      // Current length of input in buf
+
+    // Constructor: initialize buffer and draw the boot screen
+    new() {
+        this.buf = Array.new(82);
+        this.len = 0;
+        Shell.drawHeader();
+        this.printBanner();
+    }
+
+    // --------------------------------------------------------
+    // Static: draw the blue title bar at row 0
+    // --------------------------------------------------------
+    fn drawHeader() {
+        // Fill row 0 (80 cells) with white-on-blue spaces
+        // Cell format: (bg<<12)|(fg<<8)|char   => 0x1F20 = blue bg, white fg, space
+        var i: int = 0;
+        while (i < 80) {
+            poke(0xF000 + i, 0x1F20);
+            i = i + 1;
+        }
+        // Write "  HackDOS v1.0  " centered at col 32
+        var title: String = "  HackDOS v1.0  ";
+        var col: int = 32;
+        var j: int = 0;
+        while (j < title.length()) {
+            poke(0xF000 + col + j, 0x1F00 | title.charAt(j));
+            j = j + 1;
+        }
+        title.dispose();
+        // Write "[?=Help]" at right (col 70)
+        var help: String = "[?=Help]";
+        var k: int = 0;
+        while (k < 8) {
+            poke(0xF000 + 70 + k, 0x1F00 | help.charAt(k));
+            k = k + 1;
+        }
+        help.dispose();
+        Output.moveCursor(1, 0);
+    }
+
+    // --------------------------------------------------------
+    // Print the welcome banner (shown at startup)
+    // --------------------------------------------------------
+    method printBanner() {
+        Output.println();
+        Output.printString("HackDOS Version 1.0  [Hack+ 16-bit CPU]");
+        Output.println();
+        Output.printString("(c) 2025 HackCorp  |  64K address space  |  80x30 text display");
+        Output.println();
+        Output.println();
+        Output.printString("Type HELP or ? for a list of commands.");
+        Output.println();
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // Main loop: prompt -> read line -> execute command
+    // --------------------------------------------------------
+    method run() {
+        loop {
+            this.printPrompt();
+            this.readLine();
+            if (this.len > 0) {
+                this.execCommand();
+            }
+        }
+    }
+
+    // Print the DOS-style prompt "C:\> " in bright green
+    method printPrompt() {
+        Output.printChar(0x0A00 | 67);   // 'C'
+        Output.printChar(0x0A00 | 58);   // ':'
+        Output.printChar(0x0A00 | 92);   // '\'
+        Output.printChar(0x0A00 | 62);   // '>'
+        Output.printChar(32);            // space (default white)
+    }
+
+    // --------------------------------------------------------
+    // Read one line of input from keyboard into this.buf
+    // Handles: Enter (submit), Backspace (delete), printable chars
+    // --------------------------------------------------------
+    method readLine() {
+        this.len = 0;
+        loop {
+            var c: int = Keyboard.readChar();
+            if (c == 10) {                // Enter (LF)
+                Output.println();
+                break;
+            } else {
+                if (c == 8) {             // Backspace
+                    if (this.len > 0) {
+                        this.len = this.len - 1;
+                        Output.backSpace();
+                    }
+                } else {
+                    if ((c > 31) & (c < 127) & (this.len < 80)) {
+                        this.buf[this.len] = c;
+                        this.len = this.len + 1;
+                        Output.printChar(c);
+                    }
+                }
+            }
+        }
+        this.buf[this.len] = 0;   // null-terminate
+    }
+
+    // --------------------------------------------------------
+    // Helper: convert lowercase letter to uppercase
+    // --------------------------------------------------------
+    method upcase(c: int) -> int {
+        if ((c > 96) & (c < 123)) {
+            return c - 32;
+        }
+        return c;
+    }
+
+    // --------------------------------------------------------
+    // matchCmd: check if the input (case-insensitive) starts
+    // with the given command string, followed by space or end.
+    // --------------------------------------------------------
+    method matchCmd(cmd: String) -> bool {
+        var n: int = cmd.length();
+        if (this.len < n) {
+            return false;
+        }
+        var i: int = 0;
+        while (i < n) {
+            if (this.upcase(this.buf[i]) != cmd.charAt(i)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        // Make sure it's a full word (next char must be space, tab, or end)
+        if (this.len > n) {
+            var nxt: int = this.buf[n];
+            if ((nxt != 32) & (nxt != 9) & (nxt != 0)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // --------------------------------------------------------
+    // argStart: return index of first non-space char after
+    // the command (cmdLen = length of the command word).
+    // --------------------------------------------------------
+    method argStart(cmdLen: int) -> int {
+        var i: int = cmdLen;
+        while ((i < this.len) & (this.buf[i] == 32)) {
+            i = i + 1;
+        }
+        return i;
+    }
+
+    // --------------------------------------------------------
+    // matchAt: case-insensitive match of target string
+    // against this.buf starting at position `start`.
+    // --------------------------------------------------------
+    method matchAt(start: int, target: String) -> bool {
+        var n: int = target.length();
+        if ((this.len - start) < n) {
+            return false;
+        }
+        var i: int = 0;
+        while (i < n) {
+            if (this.upcase(this.buf[start + i]) != target.charAt(i)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    // --------------------------------------------------------
+    // Command dispatcher
+    // --------------------------------------------------------
+    method execCommand() {
+        if (this.matchCmd("?") | this.matchCmd("HELP")) {
+            this.cmdHelp();
+        } else if (this.matchCmd("CLS")) {
+            this.cmdCls();
+        } else if (this.matchCmd("VER")) {
+            this.cmdVer();
+        } else if (this.matchCmd("ECHO")) {
+            this.cmdEcho();
+        } else if (this.matchCmd("COLOR")) {
+            this.cmdColor();
+        } else if (this.matchCmd("DIR")) {
+            this.cmdDir();
+        } else if (this.matchCmd("TYPE")) {
+            this.cmdType();
+        } else if (this.matchCmd("PEEK")) {
+            this.cmdPeek();
+        } else if (this.matchCmd("POKE")) {
+            this.cmdPoke();
+        } else if (this.matchCmd("MEM")) {
+            this.cmdMem();
+        } else if (this.matchCmd("TIME")) {
+            this.cmdTime();
+        } else if (this.matchCmd("BEEP")) {
+            this.cmdBeep();
+        } else if (this.matchCmd("SET")) {
+            this.cmdSet();
+        } else if (this.matchCmd("EXIT") | this.matchCmd("QUIT") | this.matchCmd("HALT")) {
+            this.cmdHalt();
+        } else {
+            Output.printString("Bad command or file name.");
+            Output.println();
+        }
+    }
+
+    // --------------------------------------------------------
+    // HELP - list all available commands
+    // --------------------------------------------------------
+    method cmdHelp() {
+        Output.println();
+        Output.printString("Available commands:");
+        Output.println();
+        Output.printString("  ?  / HELP         Show this help screen");
+        Output.println();
+        Output.printString("  CLS               Clear the screen");
+        Output.println();
+        Output.printString("  VER               Show version info");
+        Output.println();
+        Output.printString("  ECHO <text>       Print text to screen");
+        Output.println();
+        Output.printString("  COLOR <0-15>      Set foreground color (0-15)");
+        Output.println();
+        Output.printString("  DIR               List directory");
+        Output.println();
+        Output.printString("  TYPE <file>       Show file contents");
+        Output.println();
+        Output.printString("  PEEK <addr>       Read memory (hex address)");
+        Output.println();
+        Output.printString("  POKE <addr> <val> Write memory (hex)");
+        Output.println();
+        Output.printString("  MEM               Show memory map");
+        Output.println();
+        Output.printString("  TIME              Show timer counter");
+        Output.println();
+        Output.printString("  BEEP              Play a 440 Hz beep");
+        Output.println();
+        Output.printString("  SET               Show environment variables");
+        Output.println();
+        Output.printString("  EXIT / HALT       Stop the CPU");
+        Output.println();
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // CLS - clear screen and redraw header
+    // --------------------------------------------------------
+    method cmdCls() {
+        // Fill framebuffer with 0x0720 (dark gray on black, space)
+        // Note: 0xF000 as a signed 16-bit int = -4096
+        // The poke address wraps correctly in 16-bit space
+        var i: int = 0;
+        while (i < 2400) {
+            poke(0xF000 + i, 0x0720);
+            i = i + 1;
+        }
+        Shell.drawHeader();
+    }
+
+    // --------------------------------------------------------
+    // VER - show version information
+    // --------------------------------------------------------
+    method cmdVer() {
+        Output.println();
+        Output.printString("HackDOS Version 1.0");
+        Output.println();
+        Output.printString("Running on the Hack+ 16-bit CPU emulator.");
+        Output.println();
+        Output.printString("  CPU:      Hack+ (16-bit, 64K address space)");
+        Output.println();
+        Output.printString("  Display:  Text mode 80 x 30 characters");
+        Output.printString("  RAM:      ~64KB total");
+        Output.println();
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // ECHO - print everything after "ECHO "
+    // --------------------------------------------------------
+    method cmdEcho() {
+        var i: int = this.argStart(4);
+        while (i < this.len) {
+            Output.printChar(this.buf[i]);
+            i = i + 1;
+        }
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // COLOR <n> - show a color sample (0-15)
+    // --------------------------------------------------------
+    method cmdColor() {
+        var astart: int = this.argStart(5);
+        if (astart >= this.len) {
+            Output.printString("Usage: COLOR <0-15>");
+            Output.println();
+            return;
+        }
+        // Parse 1 or 2 digit color number
+        var fg: int = this.buf[astart] - 48;
+        if ((astart + 1 < this.len) & (this.buf[astart + 1] >= 48) & (this.buf[astart + 1] <= 57)) {
+            fg = fg * 10 + (this.buf[astart + 1] - 48);
+        }
+        if ((fg < 0) | (fg > 15)) {
+            Output.printString("Invalid color. Use 0-15.");
+            Output.println();
+            return;
+        }
+        Output.println();
+        Output.printString("  Color ");
+        Output.printInt(fg);
+        Output.printString(": ");
+        var attr: int = fg << 8;   // fg color in bits 8-11
+        Output.printChar(attr | 72);   // 'H'
+        Output.printChar(attr | 65);   // 'A'
+        Output.printChar(attr | 67);   // 'C'
+        Output.printChar(attr | 75);   // 'K'
+        Output.printChar(attr | 68);   // 'D'
+        Output.printChar(attr | 79);   // 'O'
+        Output.printChar(attr | 83);   // 'S'
+        Output.println();
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // DIR - show a fake directory listing
+    // --------------------------------------------------------
+    method cmdDir() {
+        Output.println();
+        Output.printString(" Volume in drive C: HACKDOS");
+        Output.println();
+        Output.printString(" Volume Serial Number is 1984-DEAD");
+        Output.println();
+        Output.printString(" Directory of C:\\");
+        Output.println();
+        Output.println();
+        Output.printString("COMMAND  COM        16,384   03-16-2025  12:00a");
+        Output.println();
+        Output.printString("AUTOEXEC BAT           128   03-16-2025  12:00a");
+        Output.println();
+        Output.printString("CONFIG   SYS            64   03-16-2025  12:00a");
+        Output.println();
+        Output.printString("HACKDOS  SYS        32,768   03-16-2025  12:00a");
+        Output.println();
+        Output.printString("README   TXT           512   03-16-2025  12:00a");
+        Output.println();
+        Output.println();
+        Output.printString("         5 File(s)    49,856 bytes");
+        Output.println();
+        Output.printString("                      14,336 bytes free");
+        Output.println();
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // TYPE <file> - show a file's contents
+    // Currently supports: README, README.TXT
+    // --------------------------------------------------------
+    method cmdType() {
+        var astart: int = this.argStart(4);
+        if (astart >= this.len) {
+            Output.printString("Usage: TYPE <filename>");
+            Output.println();
+            return;
+        }
+        if (this.matchAt(astart, "README")) {
+            Output.println();
+            Output.printString("HackDOS Version 1.0 - README.TXT");
+            Output.println();
+            Output.printString("=================================");
+            Output.println();
+            Output.println();
+            Output.printString("Welcome to HackDOS, a DOS-inspired command shell");
+            Output.println();
+            Output.printString("running on the Hack+ 16-bit CPU emulator.");
+            Output.println();
+            Output.println();
+            Output.printString("This OS was written in Jack++, a class-based language");
+            Output.println();
+            Output.printString("that compiles to Hack+ VM bytecode, then to native");
+            Output.println();
+            Output.printString("Hack+ assembly machine code.");
+            Output.println();
+            Output.println();
+            Output.printString("The boot loader (boot.asm) is written in Hack+ assembly.");
+            Output.println();
+            Output.printString("It initializes the hardware, draws the boot screen, and");
+            Output.println();
+            Output.printString("would normally load this kernel from disk.");
+            Output.println();
+            Output.println();
+            Output.printString("Type HELP or ? for a list of available commands.");
+            Output.println();
+            Output.println();
+        } else {
+            Output.printString("File not found.");
+            Output.println();
+        }
+    }
+
+    // --------------------------------------------------------
+    // parseHex: parse a hexadecimal number from this.buf
+    // starting at index `start`. Handles optional 0x prefix.
+    // --------------------------------------------------------
+    method parseHex(start: int) -> int {
+        var i: int = start;
+        var result: int = 0;
+        // Skip leading spaces
+        while ((i < this.len) & (this.buf[i] == 32)) {
+            i = i + 1;
+        }
+        // Skip "0x" or "0X" prefix
+        if ((i + 1 < this.len) & (this.buf[i] == 48) & (this.upcase(this.buf[i + 1]) == 88)) {
+            i = i + 2;
+        }
+        // Parse hex digits
+        while (i < this.len) {
+            var c: int = this.upcase(this.buf[i]);
+            if ((c >= 48) & (c <= 57)) {
+                result = (result << 4) | (c - 48);
+            } else {
+                if ((c >= 65) & (c <= 70)) {
+                    result = (result << 4) | (c - 55);
+                } else {
+                    break;
+                }
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    // --------------------------------------------------------
+    // printHex: print val as 4 hex digits (e.g. "F000")
+    // --------------------------------------------------------
+    method printHex(val: int) {
+        var i: int = 3;
+        while (i > -1) {
+            var shift: int = i * 4;
+            var nibble: int = (val >> shift) & 15;
+            var c: int = 0;
+            if (nibble < 10) {
+                c = 48 + nibble;   // '0'..'9'
+            } else {
+                c = 55 + nibble;   // 'A'..'F'
+            }
+            Output.printChar(c);
+            i = i - 1;
+        }
+    }
+
+    // --------------------------------------------------------
+    // PEEK <addr> - read and display a memory address
+    // --------------------------------------------------------
+    method cmdPeek() {
+        var astart: int = this.argStart(4);
+        var addr: int = this.parseHex(astart);
+        var val: int = peek(addr);
+        Output.printString("  [0x");
+        this.printHex(addr);
+        Output.printString("]  =  0x");
+        this.printHex(val);
+        Output.printString("  (");
+        Output.printInt(val);
+        Output.printChar(41);   // ')'
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // POKE <addr> <val> - write a value to memory
+    // --------------------------------------------------------
+    method cmdPoke() {
+        var i: int = this.argStart(4);
+        var addr: int = this.parseHex(i);
+        // Skip past the first argument to find the value
+        while ((i < this.len) & (this.buf[i] != 32)) {
+            i = i + 1;
+        }
+        var val: int = this.parseHex(i);
+        poke(addr, val);
+        Output.printString("  Wrote 0x");
+        this.printHex(val);
+        Output.printString("  ->  [0x");
+        this.printHex(addr);
+        Output.printChar(93);   // ']'
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // MEM - display the Hack+ memory map
+    // --------------------------------------------------------
+    method cmdMem() {
+        Output.println();
+        Output.printString("  Hack+ 16-bit Memory Map (64K):");
+        Output.println();
+        Output.printString("  -----------------------------------");
+        Output.println();
+        Output.printString("  0x0000 - 0x000F   System / reserved");
+        Output.println();
+        Output.printString("  0x0010 - 0x00FF   Static variables");
+        Output.println();
+        Output.printString("  0x0100 - 0xEFEF   Heap  (grows up)");
+        Output.println();
+        Output.printString("  0xEFF0 - 0xEFFF   Stack (grows down from 0xEFF0)");
+        Output.println();
+        Output.printString("  0xF000 - 0xF95F   Framebuffer  (80x30 text / 160x60 pixels)");
+        Output.println();
+        Output.printString("  0xFF00 - 0xFF01   Keyboard I/O");
+        Output.println();
+        Output.printString("  0xFF10 - 0xFF12   Timer");
+        Output.println();
+        Output.printString("  0xFF20 - 0xFF23   UART");
+        Output.println();
+        Output.printString("  0xFF30 - 0xFF31   Display controller");
+        Output.println();
+        Output.printString("  0xFF40 - 0xFF43   Sound (2 channels)");
+        Output.println();
+        Output.printString("  0xFF50 - 0xFF53   Disk controller");
+        Output.println();
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // TIME - display the hardware timer registers
+    // --------------------------------------------------------
+    method cmdTime() {
+        var cnt: int = peek(0xFF12);
+        var intv: int = peek(0xFF11);
+        var ctrl: int = peek(0xFF10);
+        Output.println();
+        Output.printString("  Timer control:   0x");
+        this.printHex(ctrl);
+        Output.println();
+        Output.printString("  Timer interval:  ");
+        Output.printInt(intv);
+        Output.println();
+        Output.printString("  Timer counter:   ");
+        Output.printInt(cnt);
+        Output.println();
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // BEEP - play a 440 Hz square wave beep for 250ms
+    //
+    // Sound register layout (0xFF40-0xFF43):
+    //   offset 0 (0xFF40): Ch0 frequency (N: freq = 1,000,000 / N Hz)
+    //   offset 1 (0xFF41): Ch0 control   (bit3=enable, bits4-7=volume, bits8-9=waveform)
+    //   offset 2 (0xFF42): Ch1 frequency
+    //   offset 3 (0xFF43): Ch1 control
+    // --------------------------------------------------------
+    method cmdBeep() {
+        poke(0xFF40, 2273);             // Ch0 freq: 1000000/2273 = ~440 Hz
+        poke(0xFF41, 8 | (12 << 4));   // Ch0: enable + volume=12 + square wave
+        Sys.wait(250);
+        poke(0xFF41, 0);               // Ch0: disable
+        Output.printString("  *BEEP*  (440 Hz, 250 ms)");
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // SET - show environment variables
+    // --------------------------------------------------------
+    method cmdSet() {
+        Output.println();
+        Output.printString("  OS=HackDOS");
+        Output.println();
+        Output.printString("  VERSION=1.0");
+        Output.println();
+        Output.printString("  COMSPEC=C:\\COMMAND.COM");
+        Output.println();
+        Output.printString("  PROMPT=C:\\>");
+        Output.println();
+        Output.printString("  PATH=C:\\;C:\\SYSTEM");
+        Output.println();
+        Output.printString("  CPU=Hack+16");
+        Output.println();
+        Output.printString("  DISPLAY=TEXT80x30");
+        Output.println();
+        Output.printString("  HEAP_BASE=0x0100");
+        Output.println();
+        Output.printString("  STACK_TOP=0xEFF0");
+        Output.println();
+        Output.println();
+    }
+
+    // --------------------------------------------------------
+    // HALT / EXIT / QUIT - stop the CPU
+    // --------------------------------------------------------
+    method cmdHalt() {
+        Output.println();
+        Output.printString("System halted. Goodbye!");
+        Output.println();
+        halt();
+    }
+}
